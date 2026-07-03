@@ -1,9 +1,10 @@
 """
 WPark Car Park — Live pygame demo
 =================================
-Real-time animation of the 120-bay demo garage (40 bays × 3 floors).
-Cars actually drive around the lanes, queue behind each other, go up
-and down ramps, and park on their chosen floor.
+Real-time animation of the 60-bay demo garage (20 bays × 3 floors,
+--bays scales it up).  Cars drive the one-way lane network cell by
+cell, queue behind each other, cross the ramps, and park on their
+assigned floor.
 
 Usage:
     python demo_pygame.py
@@ -13,9 +14,10 @@ Usage:
 
 Keyboard:
     SPACE   pause / play
-    UP/DN   speed up / slow down (0.5x – 500x realtime)
+    UP/DN   speed up / slow down (1x – 500x realtime)
     1       switch to Nearest-to-Entrance (baseline)
     2       switch to Floor-Directed
+    3       switch to RL Policy (PPO)
     R       reset clock to 06:00
     Q       quit
 """
@@ -34,34 +36,14 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 from carpark import (
-    build_demo_carpark, build_scaled_carpark, interpolate_path,
-    DEMO_ENTRANCE_XY, DEMO_EXIT_XY,
-    DEMO_SHOP_EXIT_XY, DEMO_STAIRS_XY,
+    build_demo_carpark, build_scaled_carpark,
+    DEMO_ENTRANCE_XY, DEMO_EXIT_XY, DEMO_SHOP_EXIT_XY,
     DEMO_TOP_PATH_Y, DEMO_BOTTOM_PATH_Y,
-    DEMO_TOP_ROW_Y, DEMO_BOT_ROW_Y,
     DEMO_SHORTCUT_X, DEMO_UTURN_X,
     DEMO_WEST_X, DEMO_EAST_X,
     DEMO_CELL_XS, DEMO_CELL_STEP,
-    CAR_SPEED_MPS, METRES_PER_UNIT,
-    RAMP_METRES_PER_FLOOR, STAIR_SECONDS_PER_FLOOR, WALK_SPEED_MPS,
 )
 
-def _path_length_local(path: List[Tuple[float, float]]) -> float:
-    if len(path) < 2:
-        return 0.0
-    return sum(
-        math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1])
-        for i in range(len(path) - 1)
-    )
-
-
-# Visual car speed — world-units per sim-second.
-# Calibrated so that at 1× playback a car takes ~10 seconds to traverse
-# the width of one floor (90 world units).
-VISUAL_SPEED_UNITS_PER_SEC = 9.0
-# Minimum spacing (world units) between two cars on the same lane segment.
-# Enforces "cars can never pass another car ahead of them" visually.
-MIN_CAR_SPACING = 5.0
 from engine import SimulationEngine, POLICIES
 from demand import build_synthetic_demand, load_single_carpark, build_demand_profile
 
@@ -380,89 +362,6 @@ def draw_car(screen, wx: float, wy: float, floor_level: int,
         screen.blit(lbl, lr)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Car position computation — journey-based
-# ═══════════════════════════════════════════════════════════════════════════
-# Each bay has a pre-computed entry_journey and exit_journey — a list of
-# (floor, x, y) waypoints covering the full trip.  To compute a car's
-# position at time t, we walk through the journey consuming length
-# proportional to elapsed time × visual speed.
-
-BRIDGE_VISUAL_LEN = 6.0   # world-units a bridge "consumes" visually
-
-
-def _journey_segment_length(j0, j1) -> float:
-    """Length of the segment from j0 to j1 in world units.  If the
-    segment crosses a floor boundary (different floors), its length is
-    the fixed bridge length; otherwise it's the Euclidean distance."""
-    f0, x0, y0 = j0
-    f1, x1, y1 = j1
-    if f0 != f1:
-        return BRIDGE_VISUAL_LEN
-    return math.hypot(x1 - x0, y1 - y0)
-
-
-def _journey_total_length(journey) -> float:
-    if len(journey) < 2:
-        return 0.0
-    return sum(_journey_segment_length(journey[i], journey[i + 1])
-               for i in range(len(journey) - 1))
-
-
-def _interpolate_journey(journey, progress: float) -> Tuple[int, float, float]:
-    """Walk the journey consuming segment lengths proportional to progress
-    and return (floor, x, y) at that point.  Cross-floor transitions are
-    instant — the car is shown on whichever floor has more of the segment."""
-    if not journey:
-        return (0, 0.0, 0.0)
-    if len(journey) == 1:
-        return journey[0]
-    total_len = _journey_total_length(journey)
-    if total_len <= 0:
-        return journey[0]
-    target = progress * total_len
-    consumed = 0.0
-    for i in range(len(journey) - 1):
-        j0 = journey[i]
-        j1 = journey[i + 1]
-        seg_len = _journey_segment_length(j0, j1)
-        if consumed + seg_len >= target:
-            # We're on this segment
-            if j0[0] != j1[0]:
-                # Cross-floor bridge: show on j1's floor once we're past
-                # the midpoint (so the car appears to cross)
-                sub = (target - consumed) / max(seg_len, 0.001)
-                floor = j0[0] if sub < 0.5 else j1[0]
-                # Visual position: interpolate between j0 and j1 in xy
-                x = j0[1] + (j1[1] - j0[1]) * sub
-                y = j0[2] + (j1[2] - j0[2]) * sub
-                return (floor, x, y)
-            sub = (target - consumed) / max(seg_len, 0.001)
-            x = j0[1] + (j1[1] - j0[1]) * sub
-            y = j0[2] + (j1[2] - j0[2]) * sub
-            return (j0[0], x, y)
-        consumed += seg_len
-    return journey[-1]
-
-
-def _bay_path_metrics(bay):
-    """Return (visual_entry_seconds, visual_exit_seconds,
-    total_entry_len, total_exit_len)."""
-    total_entry_len = _journey_total_length(bay.entry_journey)
-    total_exit_len  = _journey_total_length(bay.exit_journey)
-    v_entry = total_entry_len / VISUAL_SPEED_UNITS_PER_SEC
-    v_exit  = total_exit_len  / VISUAL_SPEED_UNITS_PER_SEC
-    return v_entry, v_exit, total_entry_len, total_exit_len
-
-
-def _entry_position(bay, progress: float) -> Optional[Tuple[int, float, float]]:
-    return _interpolate_journey(bay.entry_journey, progress)
-
-
-def _exit_position(bay, progress: float) -> Optional[Tuple[int, float, float]]:
-    return _interpolate_journey(bay.exit_journey, progress)
-
-
 def compute_car_state(v: Dict, sim_time: float, carpark) -> Optional[Tuple]:
     """Return (floor, x, y, mode, on_correct) at sim_time, or None if
     vehicle is inactive.  mode ∈ {'parked','moving'}.
@@ -653,8 +552,8 @@ class Renderer:
     def draw_title(self, sim: Sim):
         bar = pygame.Rect(0, 0, WINDOW_W, 52)
         pygame.draw.rect(self.screen, NAVY, bar)
-        pygame.draw.line(self.screen, GOLD, (0, 50), (WINDOW_W, 50), 2)
-        t = self.font_xl.render("WPark", True, GOLD)
+        pygame.draw.line(self.screen, GOLD_DARK, (0, 50), (WINDOW_W, 50), 2)
+        t = self.font_xl.render("WPark", True, CREAM)
         self.screen.blit(t, (22, 11))
         subtitle = self.font_med.render(
             "Smart Car Park Routing · Live Simulation", True, CREAM)
@@ -870,9 +769,7 @@ class Renderer:
         # Within each group, sort by arrival order and ensure no car's x
         # position passes the car ahead of it.  Cars that would overlap
         # are clamped to sit one cell-width behind the car in front.
-        cw, _ = cell_px(0) if active else (30, 30)
-        min_gap = max(2.0, cw * 0.15 / max(1, (cw * 0.01)))  # world-unit gap
-        # Use 4 world units as minimum gap between cars on the same lane
+        # Minimum gap between cars on the same lane, in world units
         MIN_GAP_WORLD = 4.0
 
         from collections import defaultdict

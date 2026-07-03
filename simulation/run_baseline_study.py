@@ -9,7 +9,7 @@ a different random seed, and reports:
   • CSV of per-run numbers (for further analysis)
 
 Usage:
-    cd "/Users/benvarvill/Downloads/WPark /simulation"
+    cd simulation
     python run_baseline_study.py                   # 1000 runs, peak=60
     python run_baseline_study.py --runs 200        # faster
     python run_baseline_study.py --peak 80         # higher demand

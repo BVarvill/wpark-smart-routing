@@ -183,7 +183,7 @@ def run_all_policies(demo: bool = True,
     """Run all three routing policies on the same demand and return
     a SimResults containing per-policy metrics and the business case.
 
-    demo=True uses the 120-bay demo garage.
+    demo=True uses the 60-bay demo garage.
     demo=False uses the 447-bay Car Park A with real Cambridge data
         (pass data_source='GA' for Grand Arcade, etc.)
     """

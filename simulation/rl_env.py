@@ -4,19 +4,20 @@ rl_env.py — Gymnasium-compatible environment for RL training
 Wraps the cellular car park simulator as a step-by-step environment
 where each step is one arriving car.
 
-    state  = [floor_occ_0, floor_occ_1, floor_occ_2,    # 3: per-floor %
-              dest_floor_onehot,                          # 3: where customer wants
-              stay_class_onehot,                          # 3: short/med/long
-              hour_sin, hour_cos,                         # 2: time of day
-              spend_rate_norm,                             # 1: shop spend / 50
-              visit_min_norm,                              # 1: duration / 240
-              congestion_norm]                             # 1: cars currently in transit
-                                                          # Total: 14
+    state  = 25 dims (see _build_obs for the full layout):
+              per-floor occupancy [3], per-floor recent pressure [3],
+              destination floor one-hot [3], stay class one-hot [3],
+              hour sin/cos [2], spend rate norm [1], visit duration norm [1],
+              total occupancy [1], arrival rates 5/15 min [2],
+              per-floor availability [3], is-peak [1], rejected count [1],
+              inter-arrival gap [1]
 
     action = bay index (0..N_BAYS-1), masked to available bays
 
-    reward = Option B: (time_saved × conversion × spend_rate / 3600) / visit_minutes
-             Computed IMMEDIATELY per car (contextual bandit-style).
+    reward = Option B, per car: (time_saved × conversion × spend_rate / 3600)
+             / visit_minutes.  Returned immediately at each step — a
+             day-level sparse reward was tried and performed worse
+             (see step() docstring).
 
     done   = True when the day ends (all arrivals processed)
 
@@ -128,12 +129,15 @@ class CarParkEnv:
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Assign the current car to bay[action].
 
-        REWARD STRATEGY: day-level cumulative.
-        Each step returns reward=0 EXCEPT the final step of the day,
-        which returns the TOTAL daily revenue.  This forces the model
-        to learn strategies that maximise the WHOLE DAY's outcome —
-        not just one car at a time.  It's what enables lookahead:
-        the model learns that a decision NOW affects revenue LATER.
+        REWARD STRATEGY: per-car (immediate).  Each step returns the
+        Option-B revenue value of this single assignment.
+
+        A day-level sparse reward (0 every step, total daily revenue on
+        the final step) was tried first to encourage whole-day lookahead,
+        but it trained far worse: +0.3% over greedy vs +2.7% for per-car.
+        With ~500 assignments per episode the credit-assignment problem
+        was too hard; PPO's value function already propagates future
+        consequences of each assignment.
         """
         if self.current_vehicle is None:
             return self._obs_zeros(), 0.0, True, False, {}
