@@ -43,6 +43,11 @@ This single term is what the PPO agent later exploits: it gives premium bays to 
 The 400s worst case is the slowest realistic path through the demo park.
 Both constants live in one place (`engine.py` reward constants, cited in `sim_results.py`) and every downstream number inherits them.
 
+**An assumption worth flagging separately from the conversion rate itself:** citing 0.6 justifies the *rate*, not the underlying mechanism.
+The whole reward function assumes a customer who saves time on parking and walking spends that time shopping instead of leaving earlier.
+That is plausible and broadly supported by dwell-time literature in general, but neither this simulation nor the source dataset (parking events, not till receipts) can confirm it holds for this specific car park.
+The honest position is: 0.6 is a defensible number to use, not proof the mechanism is real here - a pilot with point-of-sale data is what would settle it.
+
 ## 4. Greedy = the analytic optimum of the reward, used as the bar RL must clear
 
 **Decision:** implement `policy_greedy_smart` as the exact per-car argmax of the reward function, and treat it as the strongest fair baseline.
@@ -83,8 +88,10 @@ Fixing it (training inside the cellular sim, wiring real histories through the e
 
 ## 8. Synthetic demand in the repo, real data kept private
 
-**Decision:** the committed entry points all use a synthetic demand profile (bell-curve arrivals, mixed short/medium/long stay durations).
-The real Cambridge dataset (3.6M vehicle events across 5 car parks) informed the demand model's shape and the loaders for it are included, but the data itself is WPark's and is not distributed.
+**Decision:** every committed entry point uses a hand-authored synthetic demand profile - a bell-curve arrival-rate curve and three normal-distributed stay-length clusters (short/medium/long) - rather than the real Cambridge dataset.
+
+**Precision about what "real data" contributed:** the synthetic profile's general shape (arrivals peaking around midday, a mix of short/medium/long stays) is the kind of pattern real car parks show, but the specific numbers were typed by hand for a clean, explainable demo - they were not fitted to the real Cambridge dataset (3.6M vehicle events across 5 car parks).
+`demand.py` includes loaders (`load_single_carpark`, `build_demand_profile`) capable of extracting a real arrival-rate curve AND a real stay-length distribution from that dataset - both dimensions, not only arrivals - but the raw files are WPark's and are not distributed, so no committed script uses them by default.
 
 **Consequence to state plainly:** every number in the README is a property of the simulator under synthetic demand, not a measured property of a real car park.
 The "68% wrong floor" figure is the simulator's own baseline output, not an industry statistic.

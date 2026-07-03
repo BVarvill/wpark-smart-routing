@@ -1,7 +1,7 @@
 # WPark Smart Car Park Routing
 
 Physics simulation of a multi-storey car park, plus routing policies that decide which bay each arriving car should get.
-Built during a 4-day sprint at Cambridge Judge Business School with WPark, then hardened afterwards (tests, a regenerated study, and one postmortem - see below).
+Built during a 4-day sprint at Cambridge Judge Business School with WPark, then hardened afterwards (tests, a regenerated study - see DECISIONS.md #10).
 
 A hand-coded revenue-optimal rule is the baseline to beat; a MaskablePPO agent trained from scratch beats it by a small but statistically solid margin.
 
@@ -53,9 +53,8 @@ Full per-run data: [results/combined_4policy_1000.csv](results/combined_4policy_
 The PPO agent beats the analytic per-car optimum by 5.5s per car (t = 75, n = 1000).
 Since the hand-coded rule is already perfect per decision, that margin is evidence of learned inter-car strategy: the agent sacrifices individual assignments to protect later, more valuable ones, and its queue waits are the lowest of all four policies.
 
-Notes on honesty: these are demo-scale figures under synthetic demand calibrated to the shape of real Cambridge car park data (3.6M vehicle events informed the demand model; the raw data is WPark's and is not distributed).
-The 68% wrong-floor figure is the simulator's own baseline output, not an industry statistic.
-At peak demand the 60-bay park saturates and turns away ~28% of arrivals under every policy; the comparison is therefore about serving the same customers better, not serving more of them.
+Notes on honesty: the 68% wrong-floor figure is the simulator's own baseline output under synthetic demand (see Known limitations below), not an industry statistic.
+At peak demand the 60-bay park saturates and turns away ~28% of arrivals under every policy; the comparison above is therefore about serving the same customers better, not serving more of them.
 
 ![Dashboard - model comparison](docs/img/webapp_rl_results.png)
 *The Streamlit dashboard's model comparison, computed live from a single seeded run.*
@@ -79,15 +78,7 @@ cd .. && python -m pytest tests/   # test suite
 ```
 
 The trained model ships in the repo (`simulation/models/ppo_policy.zip`), so the demo and comparisons work immediately.
-If the model fails to load, the engine logs an error and falls back to the hand-coded rule - loudly, because a silent fallback here once mislabelled greedy results as PPO results (see below).
-
-## A postmortem worth reading
-
-An earlier version of this repo had a one-line bug with study-sized consequences: the engine loaded the PPO model from a filename that did not exist, silently fell back to the greedy rule, and labelled the results "PPO".
-The published study consequently showed PPO statistically identical to greedy, while the README claimed otherwise.
-The hardening pass found it, fixed it, added a regression test that fails the suite if the model is missing or inert (`tests/test_engine.py::test_ppo_differs_from_greedy`), and regenerated every number in this README from the fixed code.
-Two more physics bugs fell out of writing the invariant tests: floor-2 cars re-traversed an entire lane on exit, and the demo layout omitted ramp length that its scaled twin included.
-The moral is boring and true: simulation bugs are invisible in aggregate metrics, so test the invariants, and never let a fallback be quiet.
+If the model fails to load, the engine logs an error and falls back to the hand-coded rule - loudly, because a silent fallback here once mislabelled greedy results as PPO results (DECISIONS.md #10).
 
 ## Known limitations
 
@@ -95,7 +86,8 @@ These are documented in detail in [DECISIONS.md](DECISIONS.md), which records ev
 
 - **The training environment omits congestion.** Training uses a fast booking-table approximation so 5M steps stay cheap; congestion only exists in the evaluation simulator. The agent cannot learn congestion avoidance from a reward that never contains it - fixing this (training inside the cellular sim) is the top roadmap item.
 - **Train/serve feature skew.** At inference time a few state dimensions are occupancy-derived proxies for histories the engine does not track. Documented in `engine.py`.
-- **Synthetic demand.** Real arrival data shaped the demand model but the committed pipeline is synthetic end to end.
+- **Demand is hand-authored, not fitted to real data.** Both the arrival-rate curve and the length-of-stay distribution used in every committed script are synthetic (a bell curve and three normal-distributed stay-length clusters), written by hand for a clean demo rather than fit to the real Cambridge dataset. `demand.py` includes loaders that can build a demand profile with real arrival rates and real stay lengths from that dataset, but the raw files are WPark's and aren't distributed, so no committed entry point uses them by default.
+- **Time saved is assumed to convert into spend.** The reward assumes a customer who saves T seconds of parking and walking spends 0.6 x T extra seconds shopping. The 0.6 figure is cited (see above), but the underlying mechanism - that freed-up minutes become shopping minutes rather than an earlier departure - is a modelled assumption, not something this simulation or the source dataset (which recorded parking events, not till receipts) can verify.
 
 ## Repository layout
 
