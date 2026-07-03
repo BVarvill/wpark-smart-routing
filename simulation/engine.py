@@ -17,18 +17,20 @@ Everything on the KPI page is derived from those fields.  Nothing is
 random at render time — pick any second and the state is deterministic.
 """
 
-import uuid
+import logging
+import math
+import os
+
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Callable, Tuple
+from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 
+logger = logging.getLogger(__name__)
+
 from carpark import (
-    CarPark, ParkingBay, BayStatus, Floor, Shop, is_bay_blocked,
-    CAR_SPEED_MPS, WALK_SPEED_MPS,
-    PARK_MANEUVER_SECONDS, UNPARK_MANEUVER_SECONDS,
-    RAMP_METRES_PER_FLOOR, STAIR_SECONDS_PER_FLOOR,
-    METRES_PER_UNIT,
+    CarPark, ParkingBay, BayStatus, Shop,
+    WALK_SPEED_MPS, PARK_MANEUVER_SECONDS, STAIR_SECONDS_PER_FLOOR,
 )
 from demand import DemandProfile
 
@@ -323,7 +325,7 @@ def policy_balanced_smart(vehicle: Vehicle, carpark: CarPark,
     return min(available, key=cost).id
 
 
-# ─── Constants for the reward function (shared with smart_policy.py) ──
+# ─── Constants for the reward function (shared with rl_env.py) ──
 # The reward function evaluates each (car, bay) assignment in £-per-minute-
 # of-visit terms.  It's designed to favour customers whose visit time would
 # be meaningfully impacted by time savings: short-stay high-spend shoppers
@@ -393,102 +395,111 @@ def policy_greedy_smart(vehicle: Vehicle, carpark: CarPark, **kw) -> Optional[st
     return available[0].id
 
 
+PPO_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "models", "ppo_policy.zip")
+
 _PPO_MODEL = None
 _PPO_LOADED = False
 
-def policy_neural_smart(vehicle: Vehicle, carpark: CarPark, **kw) -> Optional[str]:
-    """RL POLICY — uses the PPO model trained by stable-baselines3.
 
-    The PPO model was trained from scratch (no warm-start) for 200k steps
-    with MaskablePPO and a 25-dim state. It outperforms the hand-coded
-    greedy rule by ~6%.
-
-    Falls back to greedy_smart if the model can't be loaded.
-    """
+def _load_ppo_model():
+    """Load the shipped MaskablePPO model once.  Failure to load is loud:
+    the RL policy falling back to greedy would silently invalidate every
+    'PPO vs greedy' comparison downstream."""
     global _PPO_MODEL, _PPO_LOADED
+    if _PPO_LOADED:
+        return _PPO_MODEL
+    _PPO_LOADED = True
+    try:
+        from sb3_contrib import MaskablePPO
+    except ImportError as e:
+        logger.error("[PPO] sb3-contrib not installed (%s) — "
+                     "neural_smart will fall back to greedy_smart", e)
+        return None
+    if not os.path.exists(PPO_MODEL_PATH):
+        logger.error("[PPO] Model not found at %s — "
+                     "neural_smart will fall back to greedy_smart",
+                     PPO_MODEL_PATH)
+        return None
+    _PPO_MODEL = MaskablePPO.load(PPO_MODEL_PATH)
+    logger.info("[PPO] Loaded model from %s", PPO_MODEL_PATH)
+    return _PPO_MODEL
+
+
+def _build_ppo_obs(vehicle: Vehicle, carpark: CarPark) -> np.ndarray:
+    """Build the 25-dim observation for the PPO model.
+
+    KNOWN LIMITATION (documented in DECISIONS.md): the training env in
+    rl_env.py tracks real per-floor assignment history, arrival rates and
+    rejection counts.  The engine does not, so dims 3-5 and 17-18 are
+    occupancy-derived proxies and dims 23-24 are neutral constants.  This
+    is train/serve skew and one reason PPO only matches (rather than
+    beats) the analytic greedy rule in the full simulation.
+    """
+    occ = []
+    for f in carpark.floors:
+        n_occ = sum(1 for b in f.bays if b.status == BayStatus.OCCUPIED)
+        occ.append(n_occ / max(1, f.capacity))
+
+    pressure = [min(1.0, o * 1.5) for o in occ]        # proxy for recent assignments
+
+    dest = [0.0, 0.0, 0.0]
+    dest[min(vehicle.destination_floor, 2)] = 1.0
+
+    dur_min = vehicle.duration_seconds / 60.0
+    stay = [1.0, 0.0, 0.0] if dur_min < 60 else (
+           [0.0, 1.0, 0.0] if dur_min < 120 else [0.0, 0.0, 1.0])
+
+    hour = (vehicle.arrival_second / 3600.0) % 24.0
+    hour_sin = math.sin(2.0 * math.pi * hour / 24.0)
+    hour_cos = math.cos(2.0 * math.pi * hour / 24.0)
+
+    shop = _find_shop(carpark, vehicle.destination_shop)
+    spend_norm = min(1.0, (shop.spend_per_hour if shop else 0) / 50.0)
+    visit_norm = min(1.0, vehicle.duration_seconds / (240.0 * 60.0))
+
+    total_occ = sum(occ) / 3.0
+    rate_5 = min(1.0, total_occ * 2.0)                 # proxy for 5-min arrival rate
+    rate_15 = min(1.0, total_occ * 1.5)                # proxy for 15-min arrival rate
+
+    avail_per_floor = [1.0 - o for o in occ]
+    is_peak = 1.0 if 11 <= hour <= 15 else 0.0
+    rejected_norm = 0.0                                # not tracked in engine context
+    gap_norm = 0.5                                     # neutral default
+
+    return np.array(
+        occ + pressure + dest + stay
+        + [hour_sin, hour_cos, spend_norm, visit_norm, total_occ]
+        + [rate_5, rate_15] + avail_per_floor
+        + [is_peak, rejected_norm, gap_norm],
+        dtype=np.float32,
+    )
+
+
+def policy_neural_smart(vehicle: Vehicle, carpark: CarPark, **kw) -> Optional[str]:
+    """RL POLICY — MaskablePPO (stable-baselines3) over a 25-dim state.
+
+    Trained from scratch (no warm-start, no imitation) on the Option-B
+    revenue reward.  Falls back to greedy_smart if the model can't be
+    loaded — loudly, via logger.error, because a silent fallback would
+    mislabel greedy results as PPO results.
+    """
     available = carpark.get_all_available_bays()
     if not available:
         return None
 
-    if not _PPO_LOADED:
-        _PPO_LOADED = True
-        try:
-            from sb3_contrib import MaskablePPO
-            import os
-            # Try multiple paths to find the model
-            base_dirs = [
-                os.path.dirname(os.path.abspath(__file__)),
-                os.getcwd(),
-                os.path.join(os.getcwd(), "simulation"),
-            ]
-            for base in base_dirs:
-                model_path = os.path.join(base, "models", "ppo_policy_200k")
-                if os.path.exists(model_path + ".zip"):
-                    _PPO_MODEL = MaskablePPO.load(model_path)
-                    print(f"  [PPO] Loaded model from {model_path}.zip")
-                    break
-            if _PPO_MODEL is None:
-                print(f"  [PPO] Model not found, falling back to greedy")
-        except Exception as e:
-            print(f"  [PPO] Load failed: {e}")
-
-    if _PPO_MODEL is not None:
-        try:
-            import numpy as np
-            import math
-
-            # Build the 25-dim observation (must match rl_env._build_obs)
-            occ = []
-            for f in carpark.floors:
-                n_occ = sum(1 for b in f.bays if b.status.value == "occupied")
-                occ.append(n_occ / max(1, f.capacity))
-
-            # Pressure proxy (use occupancy as approximation since we don't
-            # have the env's recent_assignments history in the engine)
-            pressure = [min(1.0, o * 1.5) for o in occ]
-
-            dest = [0.0, 0.0, 0.0]
-            dest[min(vehicle.destination_floor, 2)] = 1.0
-
-            dur_min = vehicle.duration_seconds / 60.0
-            stay = [1.0, 0.0, 0.0] if dur_min < 60 else (
-                   [0.0, 1.0, 0.0] if dur_min < 120 else [0.0, 0.0, 1.0])
-
-            hour = (vehicle.arrival_second / 3600.0) % 24.0
-            hour_sin = math.sin(2.0 * math.pi * hour / 24.0)
-            hour_cos = math.cos(2.0 * math.pi * hour / 24.0)
-
-            shop = _find_shop(carpark, vehicle.destination_shop)
-            spend_norm = min(1.0, (shop.spend_per_hour if shop else 0) / 50.0)
-            visit_norm = min(1.0, vehicle.duration_seconds / (240.0 * 60.0))
-
-            total_occ = sum(occ) / 3.0
-            rate_5 = min(1.0, total_occ * 2.0)   # proxy
-            rate_15 = min(1.0, total_occ * 1.5)
-
-            avail_per_floor = [1.0 - o for o in occ]
-            is_peak = 1.0 if 11 <= hour <= 15 else 0.0
-            rejected_norm = 0.0  # not tracked in engine context
-            gap_norm = 0.5       # neutral default
-
-            obs = np.array(
-                occ + pressure + dest + stay
-                + [hour_sin, hour_cos, spend_norm, visit_norm, total_occ]
-                + [rate_5, rate_15] + avail_per_floor
-                + [is_peak, rejected_norm, gap_norm],
-                dtype=np.float32,
-            )
-
-            all_bays = [b for f in carpark.floors for b in f.bays]
-            mask = np.array([b.is_available() for b in all_bays], dtype=bool)
-
-            action, _ = _PPO_MODEL.predict(obs, deterministic=True,
-                                            action_masks=mask)
-            action = int(action)
-            if 0 <= action < len(all_bays) and mask[action]:
-                return all_bays[action].id
-        except Exception:
-            pass
+    model = _load_ppo_model()
+    if model is not None:
+        obs = _build_ppo_obs(vehicle, carpark)
+        all_bays = [b for f in carpark.floors for b in f.bays]
+        mask = np.array([b.is_available() for b in all_bays], dtype=bool)
+        action, _ = model.predict(obs, deterministic=True, action_masks=mask)
+        action = int(action)
+        if 0 <= action < len(all_bays) and mask[action]:
+            return all_bays[action].id
+        logger.warning("[PPO] Model chose invalid/masked action %d — "
+                       "falling back to greedy for vehicle %s",
+                       action, vehicle.id)
 
     return policy_greedy_smart(vehicle, carpark, **kw)
 
@@ -1172,30 +1183,20 @@ class SimulationEngine:
             self.metrics.correct_floor_pct = correct / total * 100
 
         # Option-B extra spend metric: summed across all served cars.
-        # Implemented inline to avoid circular import with policy helpers.
+        # Unlike _estimate_reward_for_bay (which prices a bay from its
+        # congestion-free times, for policy decisions), this uses each
+        # vehicle's REALISED cruise+walk time including queue waits.
         extra_total = 0.0
         served_count = 0
         for v in self.all_vehicles:
             if not v.assigned_bay:
                 continue
-            bay = self.carpark.get_bay(v.assigned_bay)
-            if bay is None:
-                continue
-            # Find the shop
-            shop = None
-            for f in self.carpark.floors:
-                for s in f.shops:
-                    if s.name == v.destination_shop:
-                        shop = s
-                        break
-                if shop:
-                    break
+            shop = _find_shop(self.carpark, v.destination_shop)
             if shop is None:
                 continue
-            visit_min = max(1.0, v.duration_seconds / 60.0)
             actual_wasted = v.cruise_time_seconds + v.walk_time_seconds
-            extra_wait_saved = max(0.0, 400.0 - actual_wasted)
-            extra_shop_seconds = extra_wait_saved * 0.6
+            extra_wait_saved = max(0.0, REWARD_WORST_CASE_WASTED - actual_wasted)
+            extra_shop_seconds = extra_wait_saved * REWARD_CONVERSION_RATE
             extra_spend = (extra_shop_seconds / 3600.0) * shop.spend_per_hour
             extra_total += extra_spend
             served_count += 1

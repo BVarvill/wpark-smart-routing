@@ -11,8 +11,8 @@ PPO advantages over REINFORCE:
   - Parallel environments for faster data collection
 
 Usage:
-    python train_ppo.py                        # 50k steps (~5 min)
-    python train_ppo.py --steps 200000         # more training
+    python train_ppo.py                        # 50k steps (~5 min, sanity check)
+    python train_ppo.py --steps 5000000        # full training (~75 min, the shipped model)
     python train_ppo.py --peak 80              # busier car park
 """
 import argparse, os, sys, time
@@ -25,9 +25,7 @@ if HERE not in sys.path:
 import gymnasium as gym
 from gymnasium import spaces
 from sb3_contrib import MaskablePPO
-from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.callbacks import BaseCallback
-import torch
 
 from rl_env import CarParkEnv, OBS_DIM
 from engine import policy_greedy_smart
@@ -142,7 +140,8 @@ def main():
                         help="total training timesteps (default 50k)")
     parser.add_argument("--peak", type=int, default=60)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--out", type=str, default="models/ppo_policy.pt")
+    parser.add_argument("--out", type=str, default="models/ppo_policy.zip",
+                    help="output path — engine.py loads models/ppo_policy.zip")
     args = parser.parse_args()
 
     print("=" * 64)
