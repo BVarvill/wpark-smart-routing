@@ -90,7 +90,7 @@ with tabs[0]:
     """)
 
     st.subheader("Run the live simulation")
-    st.code('cd "/Users/benvarvill/Downloads/WPark /simulation"\npython demo_pygame.py', language="bash")
+    st.code('cd simulation\npython demo_pygame.py', language="bash")
     st.markdown("Press `1-4` to switch models, `↑/↓` for speed, `SPACE` to pause.")
 
     st.subheader("How the simulation works")
@@ -153,14 +153,15 @@ with tabs[2]:
     st.header("Time saved = extra shopping time = extra revenue")
 
     avg_spend_hr = 22.0
-    extra_per_car = (saved / 3600) * avg_spend_hr
+    CONVERSION = 0.6   # dwell-to-spend conversion, see sim_results.py for sources
+    extra_per_car = (saved * CONVERSION / 3600) * avg_spend_hr
     cars = fm.vehicles_served
     daily = extra_per_car * cars
     yearly = daily * 365
 
     # Also compute for Revenue-Optimised
     gs_saved = bl.avg_total_wasted - gs.avg_total_wasted
-    gs_extra_car = (gs_saved / 3600) * avg_spend_hr
+    gs_extra_car = (gs_saved * CONVERSION / 3600) * avg_spend_hr
     gs_daily = gs_extra_car * gs.vehicles_served
     gs_yearly = gs_daily * 365
 
@@ -176,17 +177,17 @@ with tabs[2]:
                     f'<p class="big-metric" style="color:#10b981">£{yearly:,.0f}</p></div>', unsafe_allow_html=True)
 
     st.markdown("---")
-    st.subheader("The calculation — no conversion factor needed")
+    st.subheader("The calculation — deliberately conservative")
     st.markdown(f"""
-    The logic is simple: **time saved from better parking = extra time spent shopping.**
-
-    If a customer spends 15 seconds less walking to their shop, that's 15 seconds
-    more they're inside the mall, browsing, buying. No discount needed.
+    Not every second saved becomes a second of shopping — some of it just
+    means leaving earlier. Published UK mall research (Dennis et al. 2002;
+    Underhill 1999) puts the dwell-to-spend conversion at 0.5-0.85; we use
+    **0.6** as a conservative base case.
 
     | Step | Value | Source |
     |------|-------|--------|
     | Time saved per customer | **{saved:.0f}s** | Baseline ({bl.avg_total_wasted:.0f}s) − Floor-Match ({fm.avg_total_wasted:.0f}s) |
-    | = Extra shopping time | **{saved:.0f}s** | Time saved = time gained in shops |
+    | × Dwell-to-spend conversion | × {CONVERSION} | Dennis et al. 2002, Underhill 1999 (range 0.5-0.85) |
     | × Average spend rate | × £{avg_spend_hr}/hour | UK retail averages across categories |
     | ÷ 3600 (seconds → hours) | | |
     | = **Extra spend per customer** | **£{extra_per_car:.3f}** | |
@@ -200,7 +201,7 @@ with tabs[2]:
 
     st.subheader("Sensitivity — adjust spend rate")
     spend = st.slider("Avg spend £/hour", 10, 40, 22, 1)
-    adj_fm = (saved / 3600) * spend * cars * 365
+    adj_fm = (saved * CONVERSION / 3600) * spend * cars * 365
     st.metric("Adjusted annual uplift", f"£{adj_fm:,.0f}")
 
 
@@ -276,11 +277,6 @@ Pick the bay with the highest score.
     """)
 
 
-    gs_saved = bl.avg_total_wasted - gs.avg_total_wasted
-    gs_extra_car = (gs_saved / 3600) * 22.0
-    gs_daily = gs_extra_car * gs.vehicles_served
-    gs_yearly = gs_daily * 365
-
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(f'<div class="hero-card"><p class="metric-label">Time saved per customer</p>'
@@ -350,9 +346,10 @@ with tabs[4]:
       **£0.002 per second saved** — they have plenty of time anyway
 
     The PPO model gives the grocery customer the premium bay and sends the cinema
-    customer slightly further. The **average time saved barely changes** (21s vs 20s)
-    but the **£ value of those seconds goes up by 6.7%** because they're targeted at
-    the customers where they matter most.
+    customer slightly further. The **average time saved barely changes** vs the
+    hand-coded rule, but the **£ value of those seconds goes up** because they're
+    targeted at the customers where they matter most (exact figures in the table
+    below — computed live from this run).
 
     That's genuine strategic intelligence — **prioritising revenue over raw time** —
     and it emerged purely from the reward signal, with no human coding.
@@ -388,7 +385,7 @@ with tabs[4]:
     ]:
         m = r_all[pol]
         saved_t = bl_all.avg_total_wasted - m.avg_total_wasted
-        extra_daily = (saved_t / 3600) * 22.0 * m.vehicles_served
+        extra_daily = (saved_t * 0.6 / 3600) * 22.0 * m.vehicles_served
         extra_yearly = extra_daily * 365
         comparison_rows.append({
             "Model": label,
@@ -402,19 +399,20 @@ with tabs[4]:
 
     st.dataframe(pd.DataFrame(comparison_rows), use_container_width=True, hide_index=True)
 
+    ppo_extra_s = ((bl_all.avg_total_wasted - r_all['neural_smart'].avg_total_wasted)
+                   - (bl_all.avg_total_wasted - r_all['greedy_smart'].avg_total_wasted))
+    ppo_extra_yr = (((bl_all.avg_total_wasted - r_all['neural_smart'].avg_total_wasted)
+                     * 0.6 / 3600 * 22 * r_all['neural_smart'].vehicles_served * 365)
+                    - ((bl_all.avg_total_wasted - r_all['greedy_smart'].avg_total_wasted)
+                       * 0.6 / 3600 * 22 * r_all['greedy_smart'].vehicles_served * 365))
     st.success(f"""
     **The PPO model, trained from scratch with no human-designed routing rules,
-    outperforms the hand-coded revenue formula** — saving an extra £{
-    (bl_all.avg_total_wasted - r_all['neural_smart'].avg_total_wasted - (bl_all.avg_total_wasted - r_all['greedy_smart'].avg_total_wasted)):.0f}s
-    per customer and generating £{
-    ((bl_all.avg_total_wasted - r_all['neural_smart'].avg_total_wasted) / 3600 * 22 * r_all['neural_smart'].vehicles_served * 365) -
-    ((bl_all.avg_total_wasted - r_all['greedy_smart'].avg_total_wasted) / 3600 * 22 * r_all['greedy_smart'].vehicles_served * 365):,.0f}/year
-    more revenue. Trained in under 15 minutes on a laptop.
-    """)
-
-    st.markdown("""
-    With algorithm optimisation and real-world customer data, the model
-    will continue to improve over time.
+    edges out the hand-coded revenue formula** — an extra {ppo_extra_s:.0f}s
+    saved per customer and roughly £{ppo_extra_yr:,.0f}/year more revenue.
+    Trained for 5M steps in about 75 minutes on a laptop CPU. The honest
+    headline is that a learned policy MATCHES an analytically-optimal
+    per-car rule and finds small inter-car gains on top — see below for
+    why beating it at all is hard.
     """)
 
     st.subheader("The real opportunity: learning from real-world data over time")
@@ -436,16 +434,19 @@ with tabs[4]:
 
     st.subheader("Next steps to improve the algorithm")
     st.markdown("""
-    1. **PPO (Proximal Policy Optimisation)** — the industry-standard RL algorithm,
-       much more sample-efficient than REINFORCE. Expected: 2-5% improvement over greedy.
-    2. **50,000+ episodes** — more exploration of the state space, more chance to
-       discover genuine lookahead strategies
-    3. **Real arrival data** — train on actual Cambridge car park patterns instead
-       of synthetic demand curves
-    4. **Larger car park (120+ bays)** — more bays = more routing choices = more
-       room for RL to outperform greedy
-    5. **Pilot deployment** — deploy at one mall, measure real-world revenue impact,
-       feed results back into training
+    1. **Train inside the cellular simulator** — the current training env
+       approximates the car park without congestion, so the agent can't
+       learn congestion avoidance (the evaluation simulates it fully).
+       This is the biggest known limitation.
+    2. **Close the train/serve feature gap** — at inference time some state
+       dims are occupancy-derived proxies for histories the engine doesn't
+       track. Wiring the real histories through should recover accuracy.
+    3. **Real arrival data** — train on actual Cambridge car park patterns
+       instead of synthetic demand curves.
+    4. **Larger car park (120+ bays)** — more bays = more routing choices =
+       more room for RL to outperform greedy.
+    5. **Pilot deployment** — deploy at one mall, measure real-world revenue
+       impact, feed results back into training.
     """)
 
 
