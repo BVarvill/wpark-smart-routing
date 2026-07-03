@@ -237,7 +237,6 @@ EXIT_XY     = (20, 53)        # exit arrow on the floor plan
 #   DOWN — near the exit, used when driving DOWN to leave from floors 1-2
 UP_RAMP_XY   = (72, 92)       # up-ramp slightly away from the entrance
 DOWN_RAMP_XY = (25, 48)       # down-ramp close to the exit
-RAMP_XY      = UP_RAMP_XY     # backward-compat alias (old code referenced RAMP_XY)
 
 # ── Physics constants ───────────────────────────────────────────────────────
 # These are THE numbers the whole simulation is built on. Everything else
@@ -562,9 +561,6 @@ def build_carpark() -> CarPark:
     return CarPark(name="WPark Car Park A", floors=floors)
 
 
-# Backward-compat alias
-build_baker_street_carpark = build_carpark
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # AESTHETIC DEMO CAR PARK — clean rectangular 3D layout with lane segments
@@ -629,23 +625,6 @@ DEMO_ENTRANCE_XY    = (DEMO_WEST_X, DEMO_TOP_PATH_Y)      # (5, 70)
 DEMO_EXIT_XY        = (DEMO_WEST_X, DEMO_BOTTOM_PATH_Y)   # (5, 25)
 DEMO_SHOP_EXIT_XY   = (50, 3)      # mall entrance — south-centre of each grid
 DEMO_STAIRS_XY      = (50, 3)      # stairs next to mall entrance
-
-# ── Backwards-compat aliases (for old render code that imports them) ──
-# These are no longer used by the main pygame renderer but exist so
-# older imports don't crash.
-DEMO_UP_RAMP_XY     = (DEMO_EAST_X, DEMO_TOP_PATH_Y)
-DEMO_UP_RAMP_Y_LO   = DEMO_BOTTOM_PATH_Y
-DEMO_UP_RAMP_Y_HI   = DEMO_TOP_PATH_Y
-DEMO_DOWN_RAMP_XY   = (DEMO_SHORTCUT_X, DEMO_BOTTOM_PATH_Y)
-DEMO_DOWN_RAMP_Y_LEN = 8
-DEMO_LANE_TOP_Y     = DEMO_TOP_PATH_Y
-DEMO_LANE_BOT_Y     = DEMO_BOTTOM_PATH_Y
-DEMO_LANE_RIGHT_X   = DEMO_EAST_X
-DEMO_RAMP_RADIUS    = 5.0
-DEMO_RAMP_NORTH_POLE = (DEMO_EAST_X, DEMO_TOP_PATH_Y)
-DEMO_RAMP_STUB_X    = DEMO_EAST_X
-DEMO_WEST_CONN_X    = DEMO_WEST_X
-DEMO_EAST_CONN_X    = DEMO_EAST_X
 
 # ─── Lane segments (Option A queuing) ────────────────────────────────────
 # Passage times are the minimum time (seconds) a car occupies each segment
@@ -724,118 +703,20 @@ def build_demo_lanes() -> Dict[str, Lane]:
 
 def _demo_entry_cells(row: str, floor: int, bay_cell_idx: int,
                       lanes: Dict[str, Lane]) -> List[LaneCell]:
-    """Pre-compute the full cell path a car takes to reach this bay.
-
-    Starts at TOP_F0 cell 0 (entry) and ends at the bay's approach cell.
-    """
-    path: List[LaneCell] = []
-    if row == "TOP":
-        # Drive east on TOP of each floor until the destination floor,
-        # then stop at the bay's approach cell.
-        for fl in range(floor + 1):
-            top = lanes[f"TOP_F{fl}"]
-            if fl < floor:
-                path.extend(top.cells)           # full lane traversal
-            else:
-                path.extend(top.cells[:bay_cell_idx + 1])
-        return path
-
-    # BOT row — two routes: shortcut or F2 U-turn
-    use_shortcut = (floor < 2
-                    and bay_cell_idx >= DEMO_SHORTCUT_CELL_IDX)
-    # bay_cell_idx is on BOT (east-to-west indexing), so >= 5 means west of x=50
-
-    if use_shortcut:
-        # TOP_F0 → ... → TOP_Ffloor[0..5] → SHORTCUT_Ffloor → BOT_Ffloor[5..bay]
-        for fl in range(floor + 1):
-            top = lanes[f"TOP_F{fl}"]
-            if fl < floor:
-                path.extend(top.cells)
-            else:
-                path.extend(top.cells[:DEMO_SHORTCUT_CELL_IDX + 1])
-        path.extend(lanes[f"SHORTCUT_F{floor}"].cells)
-        bot = lanes[f"BOT_F{floor}"]
-        # Arrives at BOT cell 5 (x=50) — the shortcut-bottom junction
-        for i in range(DEMO_SHORTCUT_CELL_IDX, bay_cell_idx + 1):
-            path.append(bot.cells[i])
-        return path
-
-    # U-turn route: full TOP traversal across all 3 floors, UTURN_F2,
-    # BOT traversal from F2 west back to destination floor.
-    for fl in range(3):
-        path.extend(lanes[f"TOP_F{fl}"].cells)
-    path.extend(lanes["UTURN_F2"].cells)
-    # BOT_F2 starts at cell 0 (x=95, east end)
-    bot2 = lanes["BOT_F2"]
-    if floor == 2:
-        for i in range(bay_cell_idx + 1):
-            path.append(bot2.cells[i])
-        return path
-    path.extend(bot2.cells)   # full F2 traversal
-    bot1 = lanes["BOT_F1"]
-    if floor == 1:
-        for i in range(bay_cell_idx + 1):
-            path.append(bot1.cells[i])
-        return path
-    path.extend(bot1.cells)
-    bot0 = lanes["BOT_F0"]
-    for i in range(bay_cell_idx + 1):
-        path.append(bot0.cells[i])
-    return path
+    """Full cell path from TOP_F0 cell 0 (entry) to the bay's approach cell.
+    The 60-bay demo is the scaled layout with 10 bays/row and the
+    shortcut at the midpoint cell."""
+    return _scaled_entry_cells(row, floor, bay_cell_idx, lanes,
+                               DEMO_SHORTCUT_CELL_IDX, 10)
 
 
 def _demo_exit_cells(row: str, floor: int, bay_cell_idx: int,
                      lanes: Dict[str, Lane]) -> List[LaneCell]:
-    """Pre-compute the full cell path from the bay's approach cell to USCITA.
-    The first cell in the list IS the approach cell (the car's current
-    position when it starts exiting)."""
-    path: List[LaneCell] = []
-
-    if row == "TOP":
-        top = lanes[f"TOP_F{floor}"]
-        if floor < 2 and bay_cell_idx <= DEMO_SHORTCUT_CELL_IDX:
-            # Use this floor's shortcut — drive east from bay cell to cell 5
-            for i in range(bay_cell_idx, DEMO_SHORTCUT_CELL_IDX + 1):
-                path.append(top.cells[i])
-            path.extend(lanes[f"SHORTCUT_F{floor}"].cells)
-            # BOT_Ffloor from cell 5 west to cell 10
-            bot = lanes[f"BOT_F{floor}"]
-            for i in range(DEMO_SHORTCUT_CELL_IDX, len(bot.cells)):
-                path.append(bot.cells[i])
-            # Bridges down to F0
-            for fl in range(floor - 1, -1, -1):
-                path.extend(lanes[f"BOT_F{fl}"].cells)
-            return path
-        # Must go east to next floor's shortcut or F2 U-turn
-        for i in range(bay_cell_idx, len(top.cells)):
-            path.append(top.cells[i])
-        nf = floor + 1
-        while nf < 2:
-            nf_top = lanes[f"TOP_F{nf}"]
-            for i in range(DEMO_SHORTCUT_CELL_IDX + 1):
-                path.append(nf_top.cells[i])
-            path.extend(lanes[f"SHORTCUT_F{nf}"].cells)
-            bot_nf = lanes[f"BOT_F{nf}"]
-            for i in range(DEMO_SHORTCUT_CELL_IDX, len(bot_nf.cells)):
-                path.append(bot_nf.cells[i])
-            for fl in range(nf - 1, -1, -1):
-                path.extend(lanes[f"BOT_F{fl}"].cells)
-            return path
-        # nf == 2, use U-turn
-        path.extend(lanes["TOP_F2"].cells)
-        path.extend(lanes["UTURN_F2"].cells)
-        path.extend(lanes["BOT_F2"].cells)
-        path.extend(lanes["BOT_F1"].cells)
-        path.extend(lanes["BOT_F0"].cells)
-        return path
-
-    # BOT row — just drive west from bay cell to west end, then bridges to F0
-    bot = lanes[f"BOT_F{floor}"]
-    for i in range(bay_cell_idx, len(bot.cells)):
-        path.append(bot.cells[i])
-    for fl in range(floor - 1, -1, -1):
-        path.extend(lanes[f"BOT_F{fl}"].cells)
-    return path
+    """Full cell path from the bay's approach cell to USCITA.  The first
+    cell in the list IS the approach cell (the car's position when it
+    starts exiting)."""
+    return _scaled_exit_cells(row, floor, bay_cell_idx, lanes,
+                              DEMO_SHORTCUT_CELL_IDX, 10)
 
 
 DEMO_LANE_SEGMENTS: Dict[str, LaneSegment] = {
@@ -995,10 +876,12 @@ def _create_demo_floor_bays(floor_level: int,
         entry_cells = _demo_entry_cells(row_id, floor_level, cell_idx, lanes)
         exit_cells  = _demo_exit_cells(row_id,  floor_level, cell_idx, lanes)
 
-        # Distances derived from cell count (one cell ≈ 9u ≈ 5.85m)
+        # Distances derived from cell count (one cell ≈ 9u ≈ 5.85m),
+        # plus the physical ramp length for each floor above ground —
+        # the bridges between floors are not represented as cells.
         CELL_METRES = DEMO_CELL_STEP * METRES_PER_UNIT
-        drive_in  = len(entry_cells) * CELL_METRES
-        drive_out = len(exit_cells)  * CELL_METRES
+        drive_in  = len(entry_cells) * CELL_METRES + floor_ramp
+        drive_out = len(exit_cells)  * CELL_METRES + floor_ramp
         d_shops = _dist((x, y), DEMO_SHOP_EXIT_XY) * METRES_PER_UNIT
         cruise_in_s  = drive_in  / CAR_SPEED_MPS + PARK_MANEUVER_SECONDS
         cruise_out_s = drive_out / CAR_SPEED_MPS + UNPARK_MANEUVER_SECONDS
@@ -1066,7 +949,6 @@ def build_demo_carpark() -> CarPark:
         floors.append(Floor(level=level, name=name, bays=bays, shops=shops, capacity=len(bays)))
     cp = CarPark(name="WPark Demo Garage (60 bays)", floors=floors)
     cp.lanes = lanes      # stored on the car park for engine/renderer access
-    cp.is_demo = True
     return cp
 
 
@@ -1222,11 +1104,12 @@ def build_scaled_carpark(bays_per_row: int = 20) -> CarPark:
     total = sum(f.capacity for f in floors)
     cp = CarPark(name=f"WPark Scaled ({total} bays)", floors=floors)
     cp.lanes = lanes
-    cp.is_demo = True
     return cp
 
 
-def _scaled_entry_cells(row, floor, cell_idx, lanes, shortcut_idx, n_bays):
+def _scaled_entry_cells(row: str, floor: int, cell_idx: int,
+                        lanes: Dict[str, Lane],
+                        shortcut_idx: int, n_bays: int) -> List[LaneCell]:
     """Same logic as _demo_entry_cells but with parametric shortcut/uturn."""
     path: List[LaneCell] = []
     if row == "TOP":
@@ -1273,7 +1156,9 @@ def _scaled_entry_cells(row, floor, cell_idx, lanes, shortcut_idx, n_bays):
     return path
 
 
-def _scaled_exit_cells(row, floor, cell_idx, lanes, shortcut_idx, n_bays):
+def _scaled_exit_cells(row: str, floor: int, cell_idx: int,
+                       lanes: Dict[str, Lane],
+                       shortcut_idx: int, n_bays: int) -> List[LaneCell]:
     """Same logic as _demo_exit_cells but parametric."""
     path: List[LaneCell] = []
     if row == "TOP":
@@ -1291,7 +1176,7 @@ def _scaled_exit_cells(row, floor, cell_idx, lanes, shortcut_idx, n_bays):
         for i in range(cell_idx, len(top.cells)):
             path.append(top.cells[i])
         nf = floor + 1
-        while nf < 2:
+        if nf < 2:
             nf_top = lanes[f"TOP_F{nf}"]
             for i in range(shortcut_idx + 1):
                 path.append(nf_top.cells[i])
@@ -1302,7 +1187,11 @@ def _scaled_exit_cells(row, floor, cell_idx, lanes, shortcut_idx, n_bays):
             for fl in range(nf - 1, -1, -1):
                 path.extend(lanes[f"BOT_F{fl}"].cells)
             return path
-        path.extend(lanes["TOP_F2"].cells)
+        # F2 U-turn route.  A car that started BELOW F2 arrives over the
+        # bridge and traverses the whole of TOP_F2; a car already ON F2
+        # has its remaining TOP_F2 cells in the path from the loop above.
+        if floor < 2:
+            path.extend(lanes["TOP_F2"].cells)
         path.extend(lanes["UTURN_F2"].cells)
         path.extend(lanes["BOT_F2"].cells)
         path.extend(lanes["BOT_F1"].cells)
