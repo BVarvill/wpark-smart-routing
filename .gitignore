@@ -5,3 +5,12 @@ __pycache__/
 dist/
 build/
 .env
+*.log
+.pytest_cache/
+
+# Working notes - never commit
+AUDIT.md
+INTERVIEW_NOTES.md
+
+# Scratch study outputs (the canonical CSV in results/ IS committed)
+simulation/baseline_study*.csv

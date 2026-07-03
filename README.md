@@ -1,82 +1,123 @@
 # WPark Smart Car Park Routing
 
-Physics simulation of a multi-storey car park with reinforcement learning for revenue-optimised parking allocation. Built during a 4 day sprint at Cambridge Judge Business School with WPark (backed by Google, Nvidia, Microsoft).
+Physics simulation of a multi-storey car park, plus routing policies that decide which bay each arriving car should get.
+Built during a 4-day sprint at Cambridge Judge Business School with WPark, then hardened afterwards (tests, a regenerated study, and one postmortem - see below).
 
-## What this is
+A hand-coded revenue-optimal rule is the baseline to beat; a MaskablePPO agent trained from scratch beats it by a small but statistically solid margin.
 
-67% of shoppers in multi-storey car parks end up on the wrong floor for their desired shop. Every wrong floor costs 45 seconds of stair climbing. At £22/hour average spend, that friction costs the mall real money.
+![Live simulation - baseline routing](docs/img/demo_baseline.png)
+*Baseline (no routing) at lunchtime peak: cars park at the first empty bay, so most end up on the wrong floor for their shop (red = wrong floor, green = right floor). 32% correct floor.*
 
-I built a simulator that models this problem physically (cellular automaton, every second tracked) and tested three routing policies across 1,000 simulated days:
+![Live simulation - PPO routing](docs/img/demo_ppo.png)
+*The PPO policy on the identical day, coloured by revenue value of each assignment (purple = low, gold = high). It routes short-stay, high-spend customers to premium bays: less walking, less queueing, more revenue.*
 
-**Baseline:** park in the first available space. Ground floor fills first. No awareness of which shop the customer wants.
+## The problem
 
-**Floor Match:** if we know which shop they want, send them to that floor. Saves 15 seconds per customer. Generates £17k/year extra revenue.
-
-**PPO (reinforcement learning):** a neural network trained from scratch to maximise daily revenue. No human designed rules. It discovered its own strategy, saves 21 seconds per customer, and generates £24k/year. Outperforms the hand coded rule by 6.7%.
+In the baseline simulation, 68% of shoppers park on the wrong floor for the shop they came for, and every wrong floor costs about 45 seconds of stairs.
+Time a customer spends driving, queueing, parking, and climbing stairs is time they are not spending in shops.
+If the car park knows the customer's destination (from a parking app booking or ticket choice), it can route them better.
 
 ## How it works
 
-The simulator is a cellular automaton. Cars occupy discrete cells on a one way lane network across 3 floors. Each cell holds one car. If the cell ahead is occupied, the car waits. Parking blocks the lane for 45 seconds while the car reverses in. Congestion emerges from the physics, not from a formula.
+**The simulator is a cellular automaton.**
+Every lane is a chain of discrete cells; each cell holds at most one car; a car advances only if the next cell is empty.
+Parking blocks the lane behind the car for the full 45-second manoeuvre.
+Congestion therefore emerges from the physics - there are no tuned congestion parameters, and overtaking is impossible by construction.
+The engine simulates every second of an 18-hour day for a 60-bay, 3-floor demo garage (a parametric variant scales to 180 bays).
 
-The RL model uses a 25 dimensional state (floor occupancy, arrival rates, congestion indicators, customer features) and picks from 60 possible bays with invalid actions masked. Trained via MaskablePPO from stable-baselines3 for 1M+ timesteps on CPU in about 15 minutes.
+**The reward is revenue, not time.**
+Each assignment is scored as `time saved x 0.6 dwell-to-spend conversion x shop spend rate / visit minutes`.
+The division by visit minutes is the interesting part: a second saved for a 30-minute grocery shopper is worth more than one saved for a 2.5-hour cinema-goer.
+The 0.6 conversion comes from published UK mall research (Dennis et al. 2002; Underhill 1999; published range 0.5-0.85, we use the conservative end).
+
+**Four policies compete on identical customer streams:**
+
+1. **Baseline** - park in the first available bay (with 10% driver noise). No routing.
+2. **Floor-Match** - send the car to its destination floor, nearest bay first.
+3. **Revenue-Optimised** - the exact per-car argmax of the reward function. This is the analytic optimum for each individual decision, so it is the strongest fair baseline: RL can only beat it through inter-car strategy.
+4. **PPO** - MaskablePPO (stable-baselines3), 25-dim state, 60 masked actions, trained from scratch for 5M steps (~75 min on a laptop CPU). No warm start, no imitation.
+
+## Results
+
+1,000 simulated days per policy, paired seeds (every policy faces identical customers), paired t-tests.
+All deltas below are significant at p < 0.001, including PPO vs Revenue-Optimised.
+Full per-run data: [results/combined_4policy_1000.csv](results/combined_4policy_1000.csv). Regenerate with `python run_baseline_study.py`.
+
+| Policy | Wasted time/car | Saved vs baseline | Queue wait | Correct floor | Extra revenue/year |
+|---|---|---|---|---|---|
+| Baseline | 223.7s | - | 7.3s | 33% | - |
+| Floor-Match | 207.8s | 15.9s | 6.3s | 63% | £10,976 |
+| Revenue-Optimised | 205.9s | 17.9s | 4.8s | 52% | £11,874 |
+| **PPO** | **200.4s** | **23.3s** | **3.9s** | **55%** | **£16,336** |
+
+The PPO agent beats the analytic per-car optimum by 5.5s per car (t = 75, n = 1000).
+Since the hand-coded rule is already perfect per decision, that margin is evidence of learned inter-car strategy: the agent sacrifices individual assignments to protect later, more valuable ones, and its queue waits are the lowest of all four policies.
+
+Notes on honesty: these are demo-scale figures under synthetic demand calibrated to the shape of real Cambridge car park data (3.6M vehicle events informed the demand model; the raw data is WPark's and is not distributed).
+The 68% wrong-floor figure is the simulator's own baseline output, not an industry statistic.
+At peak demand the 60-bay park saturates and turns away ~28% of arrivals under every policy; the comparison is therefore about serving the same customers better, not serving more of them.
+
+![Dashboard - model comparison](docs/img/webapp_rl_results.png)
+*The Streamlit dashboard's model comparison, computed live from a single seeded run.*
 
 ## Running it
 
 ```bash
+git clone https://github.com/BVarvill/wpark-smart-routing.git
+cd wpark-smart-routing
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
 cd simulation
+python demo_pygame.py            # live animated simulation (keys: 1/2/3 switch policy, SPACE pause)
+python compare_policies.py       # single-day comparison of all four policies
+python run_baseline_study.py     # the full 1000-run study (~10 min)
+python train_ppo.py --steps 5000000   # retrain PPO from scratch (~75 min CPU)
+streamlit run webapp.py          # dashboard
 
-# live simulation
-python demo_pygame.py
-
-# compare all policies
-python compare_policies.py --verbose
-
-# train RL from scratch
-python train_ppo.py --steps 1000000
-
-# web dashboard
-streamlit run webapp.py
+cd .. && python -m pytest tests/   # test suite
 ```
 
-Pygame controls: 1 baseline, 2 floor match, 3 RL policy, space to pause, arrows for speed.
+The trained model ships in the repo (`simulation/models/ppo_policy.zip`), so the demo and comparisons work immediately.
+If the model fails to load, the engine logs an error and falls back to the hand-coded rule - loudly, because a silent fallback here once mislabelled greedy results as PPO results (see below).
 
-## Results
+## A postmortem worth reading
 
-All validated across 1,000 simulations, p < 0.001 on every comparison.
+An earlier version of this repo had a one-line bug with study-sized consequences: the engine loaded the PPO model from a filename that did not exist, silently fell back to the greedy rule, and labelled the results "PPO".
+The published study consequently showed PPO statistically identical to greedy, while the README claimed otherwise.
+The hardening pass found it, fixed it, added a regression test that fails the suite if the model is missing or inert (`tests/test_engine.py::test_ppo_differs_from_greedy`), and regenerated every number in this README from the fixed code.
+Two more physics bugs fell out of writing the invariant tests: floor-2 cars re-traversed an entire lane on exit, and the demo layout omitted ramp length that its scaled twin included.
+The moral is boring and true: simulation bugs are invisible in aggregate metrics, so test the invariants, and never let a fallback be quiet.
 
-| Policy | Time saved per car | Extra revenue per year | Congestion |
-|---|---|---|---|
-| Baseline | n/a | n/a | 6.5s |
-| Floor Match | 15s | £17,095 | 5.7s |
-| PPO (RL) | 21s | £24,454 | 3.4s |
+## Known limitations
 
-The 60 bay demo projects to roughly £892k/year for a full scale shopping centre.
+These are documented in detail in [DECISIONS.md](DECISIONS.md), which records every significant design choice and the alternatives rejected.
 
-## What the RL model learned
+- **The training environment omits congestion.** Training uses a fast booking-table approximation so 5M steps stay cheap; congestion only exists in the evaluation simulator. The agent cannot learn congestion avoidance from a reward that never contains it - fixing this (training inside the cellular sim) is the top roadmap item.
+- **Train/serve feature skew.** At inference time a few state dimensions are occupancy-derived proxies for histories the engine does not track. Documented in `engine.py`.
+- **Synthetic demand.** Real arrival data shaped the demand model but the committed pipeline is synthetic end to end.
 
-It figured out that not all seconds are equal. A grocery customer with 30 minutes to shop benefits more from a premium bay than a cinema customer with 2.5 hours. So it gives short stay high spend customers the closest bays and routes long stay customers slightly further. Average time saved barely changes but the revenue value of those seconds goes up because they are targeted where they matter most.
-
-## Files
+## Repository layout
 
 ```
 simulation/
-  carpark.py            car park geometry and cellular lane model
-  engine.py             simulation engine and routing policies
-  demand.py             demand generation from real Cambridge data
-  rl_env.py             gymnasium compatible RL environment
-  train_ppo.py          PPO training script
-  demo_pygame.py        live pygame visualisation
-  webapp.py             streamlit dashboard
-  compare_policies.py   side by side policy comparison
-  run_baseline_study.py 1000 run statistical study
-  sim_results.py        single source of truth for metrics
-  smart_policy.py       neural network policy and imitation learning
-  models/
-    ppo_policy.zip      trained PPO model (1M steps)
+  carpark.py            geometry + cellular lane model (60-bay demo, parametric scaled, Car Park A)
+  engine.py             discrete-event engine + the four routing policies
+  demand.py             demand profiles (synthetic + loaders for the real-data format)
+  rl_env.py             RL environment (step per arriving car)
+  train_ppo.py          MaskablePPO training
+  demo_pygame.py        live animated demo
+  webapp.py             Streamlit dashboard
+  compare_policies.py   single-day policy comparison
+  run_baseline_study.py 1000-run statistical study
+  sim_results.py        business-case arithmetic (all constants cited here)
+  models/ppo_policy.zip trained PPO model (5M steps)
 results/
-  combined_4policy_1000.csv  full study results
+  combined_4policy_1000.csv   the full study behind the results table
+tests/                  physics invariants, determinism, reward maths, PPO regression
+DECISIONS.md            design decisions + rejected alternatives
 ```
 
-## Data
+## License
 
-Simulated demand is calibrated against real Cambridge car park data (3.6M vehicle events across 5 car parks). Shop destinations are modelled synthetically based on peak hour weighting.
+MIT - see [LICENSE](LICENSE).
