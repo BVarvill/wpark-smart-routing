@@ -483,12 +483,14 @@ class Sim:
         else:
             self.carpark = build_scaled_carpark(bays_per_row=self.bays_per_row)
         if self.use_ga:
-            # Scale Grand Arcade data down to ~120-bay car park
-            # GA has ~780 bays; scale factor 120/780 ≈ 0.154
+            # Scale Grand Arcade data down for the demo car park.
+            # GA has ~780 bays; GA_SCALE (0.15 ≈ 120/780) was tuned for a
+            # 120-bay layout; the default demo is 60 bays, so this path is
+            # demand-heavy and is not used by any shipped result.
             data_dir = os.path.dirname(HERE)
             df = load_single_carpark(data_dir, "GA")
             self.demand = build_demand_profile(df, name="Grand Arcade (scaled)")
-            # Scale hourly arrival rates down to fit our 120-bay layout
+            # Scale hourly arrival rates down by GA_SCALE
             GA_SCALE = 0.15
             for h in range(24):
                 if h in self.demand.hourly_arrival_rate:

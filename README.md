@@ -9,7 +9,7 @@ A hand-coded revenue-optimal rule is the baseline to beat; a MaskablePPO agent t
 *Baseline (no routing) at lunchtime peak: cars park at the first empty bay, so most end up on the wrong floor for their shop (red = wrong floor, green = right floor). 32% correct floor.*
 
 ![Live simulation - PPO routing](docs/img/demo_ppo.png)
-*The PPO policy on the identical day, coloured by revenue value of each assignment (purple = low, gold = high). It routes short-stay, high-spend customers to premium bays: less walking, less queueing, more revenue.*
+*The PPO policy on the identical day, coloured by wasted time per car (purple = slow, gold = fast). It routes short-stay, high-spend customers to premium bays: less walking, less queueing, more revenue.*
 
 ## The problem
 
@@ -88,6 +88,13 @@ These are documented in detail in [DECISIONS.md](DECISIONS.md), which records ev
 - **Train/serve feature skew.** At inference time a few state dimensions are occupancy-derived proxies for histories the engine does not track. Documented in `engine.py`.
 - **Demand is hand-authored, not fitted to real data.** Both the arrival-rate curve and the length-of-stay distribution used in every committed script are synthetic (a bell curve and three normal-distributed stay-length clusters), written by hand for a clean demo rather than fit to the real Cambridge dataset. `demand.py` includes loaders that can build a demand profile with real arrival rates and real stay lengths from that dataset, but the raw files are WPark's and aren't distributed, so no committed entry point uses them by default.
 - **Time saved is assumed to convert into spend.** The reward assumes a customer who saves T seconds of parking and walking spends 0.6 x T extra seconds shopping. The 0.6 figure is cited (see above), but the underlying mechanism - that freed-up minutes become shopping minutes rather than an earlier departure - is a modelled assumption, not something this simulation or the source dataset (which recorded parking events, not till receipts) can verify.
+
+## How this was built
+
+I directed the work, designed the reward, chose the baselines, ran and checked every study, and wrote the decision log.
+Coding agents wrote most of the Python under my direction.
+Every number in this README I recomputed myself from the committed CSV.
+The hardening pass landed as one rebased series on 3 July 2026, 12 weeks after the 4-day sprint.
 
 ## Repository layout
 

@@ -1,9 +1,11 @@
 """
 Simulation Engine — Time-accurate discrete-event car park simulation
 ====================================================================
-Replays real demand patterns from the 5 Cambridge car parks through the
-WPark Car Park A model.  Every vehicle gets a real arrival TIME (in
-seconds, not minutes) so the UI can step the clock one second at a time.
+Second-by-second discrete-event car park simulation.  Default: synthetic
+demand on the 60-bay cellular demo.  Loaders for the real Cambridge data
+exist in demand.py but are not used by any shipped result.  Every vehicle
+gets a real arrival TIME (in seconds, not minutes) so the UI can step the
+clock one second at a time.
 
 Key outputs per vehicle:
     arrival_second           — the moment the car reaches the entrance
@@ -431,10 +433,11 @@ def _build_ppo_obs(vehicle: Vehicle, carpark: CarPark) -> np.ndarray:
 
     KNOWN LIMITATION (documented in DECISIONS.md): the training env in
     rl_env.py tracks real per-floor assignment history, arrival rates and
-    rejection counts.  The engine does not, so dims 3-5 and 17-18 are
-    occupancy-derived proxies and dims 23-24 are neutral constants.  This
-    is train/serve skew and one reason PPO only matches (rather than
-    beats) the analytic greedy rule in the full simulation.
+    rejection counts.  The engine does not, so 7 of the 25 dims are not
+    faithful at inference: dims 3-5 and 17-18 are occupancy-derived proxies
+    and dims 23-24 are neutral constants.  This is train/serve skew and one
+    reason PPO's margin over the analytic greedy rule is small (5.5 s a car
+    on the 60-bay demo; see README).
     """
     occ = []
     for f in carpark.floors:

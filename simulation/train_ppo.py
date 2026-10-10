@@ -139,7 +139,7 @@ def main():
     parser.add_argument("--steps", type=int, default=50000,
                         help="total training timesteps (default 50k)")
     parser.add_argument("--peak", type=int, default=60)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=1e-4)  # the shipped model was trained at 1e-4
     parser.add_argument("--out", type=str, default="models/ppo_policy.zip",
                     help="output path — engine.py loads models/ppo_policy.zip")
     args = parser.parse_args()
